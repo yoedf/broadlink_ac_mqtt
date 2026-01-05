@@ -9,6 +9,7 @@ import paho.mqtt.client as mqtt
 import tempfile
 import json
 import traceback
+import socket
 
 sys.path.insert(1, os.path.join(os.path.dirname(os.path.realpath(__file__)),'classes','broadlink'))
 import broadlink_ac_mqtt.classes.broadlink.ac_db as broadlink
@@ -42,39 +43,65 @@ class AcToMqtt:
 			#print status
 
 	
-	def discover(self):		
+	def discover(self):
+		print("Starting device discovery")
+		try:
+			# Log the bind_to_ip value
+			print("Binding to IP: {}".format(self.config['bind_to_ip']))
 
-		##Go discovery
-		discovered_devices = broadlink.discover(timeout=5,bind_to_ip=self.config['bind_to_ip'])			
-		devices = {}
-		
-		if discovered_devices == None:
-			error_msg = "No Devices Found, make sure you on the same network segment"
-			logger.debug(error_msg)
-			
-			#print "nothing found"
+			# Go discovery
+			discovered_devices = broadlink.discover(timeout=5, bind_to_ip=self.config['bind_to_ip'])
+			devices = {}
+
+			if discovered_devices is None:
+				error_msg = "No Devices Found, make sure you are on the same network segment"
+				logger.debug(error_msg)
+				print(error_msg)
+				sys.exit()
+
+			# Make sure correct device id
+			for device in discovered_devices:
+				print("Discovered device: {}".format(device))
+				if device.devtype == 0x4E2a:
+					devices[device.status['macaddress']] = device
+
+			return devices
+
+		except socket.error as e:
+			print("Socket error during discovery: {}".format(e))
+			print("Socket error during discovery: {}".format(e))
 			sys.exit()
-			
-		##Make sure correct device id 
-		for device in discovered_devices:		  			
-			if device.devtype == 0x4E2a:
-				devices[device.status['macaddress']] = device				
-		
-		return devices
-		
 
-	
-	def make_device_objects(self,device_list = None):
+		except Exception as e:
+			print("Unexpected error during discovery: {}".format(e))
+			logger.debug(traceback.format_exc())
+			print("Unexpected error during discovery: {}".format(e))
+			sys.exit()
+
+	def make_device_objects(self, device_list=None):
 		device_objects = {}
-		
-		if  device_list == [] or device_list == None:
-			error_msg = " Cannot make device objects, empty list given"
-			logger.error(error_msg)			
+		if device_list == [] or device_list is None:
+			error_msg = "Cannot make device objects, empty list given"
+			logger.error(error_msg)
 			sys.exit()
-		
-		for device in device_list:			
-			device_objects[device['mac']] = broadlink.gendevice(devtype=0x4E2a, host=(device['ip'],device['port']),mac = bytearray.fromhex(device['mac']), name=device['name'],update_interval = self.config['update_interval'])		
-			
+		for device in device_list:
+			try:
+				device_obj = broadlink.gendevice(
+					devtype=0x4E2a,
+					host=(device['ip'], device['port']),
+					mac=bytearray.fromhex(device['mac']),
+					name=device['name'],
+					update_interval=self.config['update_interval']
+				)
+				# Only add if device_obj is not False (ac_db returns False on failed auth)
+				if device_obj:
+					device_objects[device['mac']] = device_obj
+				else:
+					logger.error(f"Failed to initialize device {device['name']} ({device['mac']}) - skipping.")
+			except Exception as e:
+				logger.error(f"Exception initializing device {device['name']} ({device['mac']}): {e}")
+				logger.debug(traceback.format_exc())
+				# Skip this device and continue
 		return device_objects
 
 	def stop(self):
@@ -336,6 +363,10 @@ class AcToMqtt:
 
 		except Exception as e:	
 			logger.critical(e)			
+			return
+
+		if not self.device_objects.get(address):
+			logger.error("Device not on list of devices %s" % (address))
 			return
 			
 		

@@ -338,34 +338,43 @@ def start():
 		##Connect to Mqtt
 		AC.connect_mqtt()				
 		
-		if config["self_discovery"]:	
+		if config["self_discovery"]:
 			devices = AC.discover()
 		else:
+			# Initial device creation
 			devices = AC.make_device_objects(config['devices'])
-		
-		
+
 		if args.dumphaconfig:
-			AC.dump_homeassistant_config_from_devices(devices)			
+			AC.dump_homeassistant_config_from_devices(devices)
 			sys.exit()
 
-		
-		
-			
-		##Publish mqtt auto discovery if topic  set
 		if config["mqtt_auto_discovery_topic"]:
-			AC.publish_mqtt_auto_discovery(devices)			
-	
-		##One loop
-		do_loop = True if config["daemon_mode"] else False			
-				
-		##Run main loop
-		while do_loop :
+			AC.publish_mqtt_auto_discovery(devices)
+
+		# --- Improved main loop: retry only failed devices ---
+		do_loop = True if config["daemon_mode"] else False
+
+		# Track active and failed devices
+		all_device_dicts = {d['mac']: d for d in config['devices']}
+		active_devices = devices.copy() if devices else {}
+		failed_macs = set(all_device_dicts.keys()) - set(active_devices.keys())
+
+		while do_loop:
 			running = True
-			
-			AC.start(config,devices)
-			 
+
+			# Retry only failed devices
+			if failed_macs:
+				retry_list = [all_device_dicts[mac] for mac in failed_macs]
+				retried = AC.make_device_objects(retry_list)
+				# Add any newly successful devices
+				for mac, dev in retried.items():
+					active_devices[mac] = dev
+				# Update failed_macs
+				failed_macs = set(all_device_dicts.keys()) - set(active_devices.keys())
+
+			AC.start(config, active_devices)
 			touch_pid_file()
-		
+
 		running = False
 	except KeyboardInterrupt:
 		logging.debug("User Keyboard interuped")	
